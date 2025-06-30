@@ -62,7 +62,7 @@ export default function PriceConsultationApp() {
 
   const loadCompanyData = async () => {
     try {
-      const response = await fetch("https://dadosloja2.s3.us-east-2.amazonaws.com/precos2.json", {
+      const response = await fetch("https://dadosloja2.s3.us-east-2.amazonaws.com/lojas2.json", {
         cache: "no-cache",
       })
       const data = await response.json()
