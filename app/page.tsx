@@ -62,7 +62,7 @@ export default function PriceConsultationApp() {
 
   const loadCompanyData = async () => {
     try {
-      const response = await fetch("https://dados-publicos-minha-loja-12345.s3.us-east-2.amazonaws.com/lojas.json", {
+      const response = await fetch("https://dadosloja2.s3.us-east-2.amazonaws.com/precos2.json", {
         cache: "no-cache",
       })
       const data = await response.json()
@@ -79,7 +79,7 @@ export default function PriceConsultationApp() {
   }
 
   const loadProducts = async (silent = false) => {
-    const url = "https://dados-publicos-minha-loja-12345.s3.us-east-2.amazonaws.com/precos.json"
+    const url = "https://dadosloja2.s3.us-east-2.amazonaws.com/precos2.json"
 
     try {
       if (!silent) setLoading(true)
