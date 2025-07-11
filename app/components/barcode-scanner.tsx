@@ -26,6 +26,8 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
   const [isScanning, setIsScanning] = useState(false)
   const [lastScannedCode, setLastScannedCode] = useState<string>("")
   const [scanCount, setScanCount] = useState(0)
+  const [isFlashOn, setIsFlashOn] = useState(false) // Novo estado para o flash
+  const videoTrackRef = useRef<MediaStreamTrack | null>(null) // Referência para a trilha de vídeo
 
   const playBeepSound = () => {
     try {
@@ -63,11 +65,9 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
 
   const initializeCameras = async () => {
     try {
-      // Solicitar permissão
-      const tempStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      })
-      tempStream.getTracks().forEach((track) => track.stop())
+      // Solicitar permissão inicial para listar as câmeras
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true })
+      tempStream.getTracks().forEach((track) => track.stop()) // Parar a stream temporária imediatamente
 
       // Listar câmeras
       const devices = await navigator.mediaDevices.enumerateDevices()
@@ -95,15 +95,21 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
     }
   }
 
-  const startScanner = async (cameraIndex?: number) => {
+  const startScanner = async (cameraIndexParam?: number) => {
     try {
       setIsLoading(true)
       setError("")
       setScanCount(0)
+      setLastScannedCode("") // Resetar último código escaneado
+      setIsFlashOn(false) // Desligar o flash ao reiniciar o scanner
 
-      // Parar scanner anterior
+      // Parar scanner anterior e liberar a track
       await stopScanner()
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      if (videoTrackRef.current) {
+        videoTrackRef.current.stop()
+        videoTrackRef.current = null
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300)) // Pequeno delay
 
       const QuaggaLib = await loadQuagga()
 
@@ -114,6 +120,23 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
       // Limpar container
       scannerRef.current.innerHTML = ""
 
+      const selectedCamera = cameras[cameraIndexParam !== undefined ? cameraIndexParam : currentCameraIndex]
+
+      if (!selectedCamera) {
+        throw new Error("Câmera selecionada não encontrada.")
+      }
+
+      // Obter o stream de vídeo diretamente para ter controle sobre a track
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: { exact: selectedCamera.deviceId },
+          width: { min: 640, ideal: 1280 },
+          height: { min: 480, ideal: 720 },
+          facingMode: selectedCamera.label.toLowerCase().includes("front") ? "user" : "environment", // Sugere facingMode
+        },
+      })
+      videoTrackRef.current = stream.getVideoTracks()[0] // Salva a referência da trilha de vídeo
+
       // Configuração do QuaggaJS
       const config = {
         inputStream: {
@@ -121,12 +144,12 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
           type: "LiveStream",
           target: scannerRef.current,
           constraints: {
-            width: { min: 640, ideal: 1280 },
-            height: { min: 480, ideal: 720 },
-            deviceId:
-              cameras.length > 0 && cameraIndex !== undefined ? { exact: cameras[cameraIndex].deviceId } : undefined,
-            facingMode: cameras.length === 0 ? "environment" : undefined,
+            // Não passamos deviceId aqui, pois o stream já foi criado
+            // Quagga usará o stream que ele "pegar" do target
           },
+          // Passa o MediaStream diretamente para o Quagga
+          // Isso é uma extensão que nem sempre é documentada, mas funciona se o target for um elemento de vídeo
+          // Ou podemos simplesmente deixar o Quagga usar a stream que ele iniciaria no target
         },
         locator: {
           patchSize: "medium",
@@ -155,19 +178,34 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
         locate: true,
       }
 
-      console.log("🚀 Iniciando QuaggaJS...")
+      console.log("🚀 Iniciando QuaggaJS com stream externo...")
 
-      // Inicializar QuaggaJS
+      // Inicializar QuaggaJS, passando o MediaStream gerado
       await new Promise<void>((resolve, reject) => {
-        QuaggaLib.init(config, (err: any) => {
-          if (err) {
-            console.error("❌ Erro ao inicializar QuaggaJS:", err)
-            reject(err)
-            return
-          }
-          console.log("✅ QuaggaJS inicializado!")
-          resolve()
-        })
+        // Quagga init com o stream direto, se suportado ou config.inputStream.target será suficiente
+        QuaggaLib.init(
+          {
+            ...config,
+            inputStream: {
+              ...config.inputStream,
+              stream: stream, // Passa o stream diretamente
+            },
+          },
+          (err: any) => {
+            if (err) {
+              console.error("❌ Erro ao inicializar QuaggaJS:", err)
+              // Certifique-se de parar a stream em caso de erro na inicialização do Quagga
+              if (videoTrackRef.current) {
+                videoTrackRef.current.stop()
+                videoTrackRef.current = null
+              }
+              reject(err)
+              return
+            }
+            console.log("✅ QuaggaJS inicializado!")
+            resolve()
+          },
+        )
       })
 
       // Callback de detecção
@@ -205,13 +243,18 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
     } catch (err: any) {
       console.error("❌ Erro ao iniciar scanner:", err)
       setIsLoading(false)
+      setIsFlashOn(false) // Garante que o flash esteja desligado em caso de erro
 
       if (err.name === "NotAllowedError") {
-        setError("Permissão da câmera negada")
-      } else if (err.name === "NotFoundError") {
-        setError("Câmera não encontrada")
+        setError("Permissão da câmera negada. Por favor, permita o acesso à câmera nas configurações do navegador.")
+      } else if (err.name === "NotFoundError" || err.message.includes("no camera")) {
+        setError("Nenhuma câmera encontrada ou acessível.")
       } else {
-        setError("Erro ao inicializar câmera")
+        setError("Erro ao inicializar câmera. Tente novamente.")
+      }
+      if (videoTrackRef.current) {
+        videoTrackRef.current.stop()
+        videoTrackRef.current = null
       }
     }
   }
@@ -227,7 +270,12 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
       console.warn("⚠️ Erro ao parar scanner:", err)
     }
 
+    if (videoTrackRef.current) {
+      videoTrackRef.current.stop()
+      videoTrackRef.current = null
+    }
     setIsScanning(false)
+    setIsFlashOn(false) // Desligar flash ao parar
     if (navigator.vibrate) {
       navigator.vibrate(0)
     }
@@ -240,14 +288,41 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
     await startScanner(nextIndex)
   }
 
+  const toggleFlash = async () => {
+    if (!videoTrackRef.current) {
+      console.warn("❌ Não há track de vídeo ativa para controlar o flash.")
+      return
+    }
+
+    const capabilities = videoTrackRef.current.getCapabilities()
+    // Verifica se a câmera suporta a funcionalidade de tocha/flash
+    if (!capabilities.torch) {
+      console.warn("⚠️ A câmera atual não suporta flash/tocha.")
+      // Você pode mostrar uma notificação ao usuário aqui
+      return
+    }
+
+    try {
+      await videoTrackRef.current.applyConstraints({
+        advanced: [{ torch: !isFlashOn }], // Inverte o estado do flash
+      })
+      setIsFlashOn(!isFlashOn)
+      console.log(`💡 Flash: ${!isFlashOn ? "LIGADO" : "DESLIGADO"}`)
+    } catch (err) {
+      console.error("❌ Erro ao alternar flash:", err)
+      // Tratar erro, talvez mostrar notificação
+    }
+  }
+
+  // Efeito para inicializar câmeras e scanner
   useEffect(() => {
     const initialize = async () => {
       try {
         await initializeCameras()
-        await startScanner()
+        // `startScanner` será chamado após as câmeras serem carregadas
       } catch (err) {
-        console.error("❌ Erro na inicialização:", err)
-        setError("Erro ao inicializar câmera")
+        console.error("❌ Erro na inicialização das câmeras:", err)
+        setError("Erro ao carregar câmeras: " + (err as Error).message)
         setIsLoading(false)
       }
     }
@@ -258,6 +333,14 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
       stopScanner()
     }
   }, [])
+
+  // Efeito para iniciar o scanner quando as câmeras são carregadas ou a câmera é trocada
+  useEffect(() => {
+    if (cameras.length > 0 && !isScanning && !isLoading && !error) {
+      // Se não estiver escaneando e não estiver carregando, inicie o scanner com a câmera atual
+      startScanner(currentCameraIndex)
+    }
+  }, [cameras, currentCameraIndex, isScanning, isLoading, error]) // Dependências
 
   // Tela de erro
   if (error) {
@@ -272,7 +355,7 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
               <Button
                 onClick={() => {
                   setError("")
-                  window.location.reload()
+                  window.location.reload() // Recarregar a página para tentar novamente
                 }}
                 className="w-full bg-yellow-400 hover:bg-yellow-500 text-black font-bold py-4 text-lg rounded-xl"
               >
@@ -316,12 +399,28 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
             </div>
           </div>
 
-          {/* Status */}
-          <div className="text-right">
-            <div className="text-white text-sm font-medium">
-              {isLoading ? "Iniciando..." : isScanning ? "Escaneando" : "Pausado"}
+          {/* Status e Botão de Flash */}
+          <div className="flex items-center space-x-3">
+            {videoTrackRef.current && videoTrackRef.current.getCapabilities().torch && (
+              <Button
+                onClick={toggleFlash}
+                size="icon"
+                variant="ghost"
+                className={`
+                  rounded-full transition-colors duration-200
+                  ${isFlashOn ? "bg-yellow-400 text-black hover:bg-yellow-500" : "text-white hover:bg-white/10"}
+                `}
+                disabled={isLoading}
+              >
+                <Zap className="w-6 h-6" />
+              </Button>
+            )}
+            <div className="text-right">
+              <div className="text-white text-sm font-medium">
+                {isLoading ? "Iniciando..." : isScanning ? "Escaneando" : "Pausado"}
+              </div>
+              {isScanning && <div className="text-yellow-400 text-xs">{scanCount} tentativas</div>}
             </div>
-            {isScanning && <div className="text-yellow-400 text-xs">{scanCount} tentativas</div>}
           </div>
         </div>
       </div>
