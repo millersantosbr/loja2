@@ -402,7 +402,7 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
             )}
           </div>
 
-          {/* Lista de câmeras disponíveis */}
+          {/* Lista de câmeras disponíveis com os novos estilos */}
           {cameras.length > 1 && (
             <div className="flex flex-wrap gap-2 justify-center">
               {cameras.map((camera, index) => (
@@ -414,11 +414,15 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
                     startScanner(index)
                   }}
                   disabled={isLoading}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    index === currentCameraIndex
-                      ? "bg-yellow-400 text-black"
-                      : "bg-white/10 text-white hover:bg-white/20"
-                  }`}
+                  className={`
+                    px-3 py-1 flex items-center justify-center rounded-full
+                    text-xs font-medium transition-all whitespace-nowrap
+                    ${
+                      index === currentCameraIndex
+                        ? "bg-yellow-400 text-black"
+                        : "bg-white/10 text-white hover:bg-white/20"
+                    }
+                  `}
                 >
                   📷 {getCameraName(camera, index)}
                 </button>
@@ -430,3 +434,4 @@ export default function BarcodeScanner({ onBarcodeScanned, onBack }: BarcodeScan
     </div>
   )
 }
+
